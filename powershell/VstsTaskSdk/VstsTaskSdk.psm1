@@ -54,6 +54,7 @@ Export-ModuleMember -Function @(
         # Server OM functions.
         'Get-TfsClientCredentials'
         'Get-VssCredentials'
+        'New-VssHttpClient'
         # Tool functions.
         'Assert-Path'
         'Invoke-Tool'
