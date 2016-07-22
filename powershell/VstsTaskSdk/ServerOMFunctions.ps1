@@ -18,14 +18,39 @@ $versionControlServer.GetItems('$/*').Items | Format-List
 #>
 function Get-TfsClientCredentials {
     [CmdletBinding()]
-    param()
+    param([string]$OMDirectory)
 
-    Add-Type -LiteralPath (Assert-Path "$(Get-TaskVariable -Name 'Agent.ServerOMDirectory' -Require)\Microsoft.TeamFoundation.Client.dll" -PassThru)
-    $endpoint = (Get-Endpoint -Name SystemVssConnection -Require)
-    $credentials = New-Object Microsoft.TeamFoundation.Client.TfsClientCredentials($false) # Do not use default credentials.
-    $credentials.AllowInteractive = $false
-    $credentials.Federated = New-Object Microsoft.TeamFoundation.Client.OAuthTokenCredential([string]$endpoint.auth.parameters.AccessToken)
-    $credentials
+    Trace-EnteringInvocation -InvocationInfo $MyInvocation
+    try {
+        $ErrorActionPreference = 'Stop'
+
+        # Default the OMDirectory to the directory containing the entry script.
+        if (!$OMDirectory) {
+            $OMDirectory = [System.IO.Path]::GetFullPath("$PSScriptRoot\..\..")
+        }
+
+        # Get the endpoint.
+        $endpoint = Get-Endpoint -Name SystemVssConnection -Require
+
+        # Testing the type will load the fallback DLL if required.
+        $fallbackDll = [System.IO.Path]::Combine($OMDirectory, 'Microsoft.TeamFoundation.Client.dll')
+        $typeName = 'Microsoft.TeamFoundation.Client.TfsClientCredentials'
+        if (!(Test-Type -TypeName $typeName -FallbackDll $fallbackDll)) {
+            # Bubble the error.
+            $null = [type]$typeName
+        }
+
+        # Construct the credentials.
+        $credentials = New-Object Microsoft.TeamFoundation.Client.TfsClientCredentials($false) # Do not use default credentials.
+        $credentials.AllowInteractive = $false
+        $credentials.Federated = New-Object Microsoft.TeamFoundation.Client.OAuthTokenCredential([string]$endpoint.auth.parameters.AccessToken)
+        return $credentials
+    } catch {
+        $ErrorActionPreference = 'Continue'
+        Write-Error $_
+    } finally {
+        Trace-LeavingInvocation -InvocationInfo $MyInvocation
+    }
 }
 
 <#
@@ -48,30 +73,47 @@ $projectHttpClient.GetProjects().Result
 #>
 function Get-VssCredentials {
     [CmdletBinding()]
-    param(
-        [string]$OMDirectory)
+    param([string]$OMDirectory)
 
     Trace-EnteringInvocation -InvocationInfo $MyInvocation
     try {
+        $ErrorActionPreference = 'Stop'
+
+        # Default the OMDirectory to the directory containing the entry script.
         if (!$OMDirectory) {
-            # Fallback to the directory containing the entry script.
             $OMDirectory = [System.IO.Path]::GetFullPath("$PSScriptRoot\..\..")
         }
 
-        # Get the credentials.
-        $endpoint = (Get-Endpoint -Name SystemVssConnection -Require)
-        Add-Type -LiteralPath (Assert-Path "$(Get-TaskVariable -Name 'Agent.ServerOMDirectory' -Require)\Microsoft.VisualStudio.Services.Common.dll" -PassThru)
-        Add-Type -LiteralPath (Assert-Path "$(Get-TaskVariable -Name 'Agent.ServerOMDirectory' -Require)\Microsoft.VisualStudio.Services.WebApi.dll" -PassThru)
-        # Add-Type -LiteralPath (Assert-Path "$(Get-TaskVariable -Name 'Agent.ServerOMDirectory' -Require)\Microsoft.VisualStudio.Services.Client.dll" -PassThru)
-        New-Object Microsoft.VisualStudio.Services.Common.VssCredentials(
-            (New-Object Microsoft.VisualStudio.Services.Common.WindowsCredential($false)), # Do not use default credentials.
-            (New-Object Microsoft.VisualStudio.Services.OAuth.VssOAuthAccessTokenCredential($endpoint.auth.parameters.AccessToken)),
-            [Microsoft.VisualStudio.Services.Common.CredentialPromptType]::DoNotPrompt)
+        # Get the endpoint.
+        $endpoint = Get-Endpoint -Name SystemVssConnection -Require
+
+        # Check if the VssOAuthAccessTokenCredential type is available.
+        $fallbackDll = [System.IO.Path]::Combine($OMDirectory, 'Microsoft.VisualStudio.Services.WebApi.dll')
+        if ((Test-Type -TypeName Microsoft.VisualStudio.Services.OAuth.VssOAuthAccessTokenCredential -FallbackDll $fallbackDll)) {
+            # Return the credentials.
+            return New-Object Microsoft.VisualStudio.Services.Common.VssCredentials(
+                (New-Object Microsoft.VisualStudio.Services.Common.WindowsCredential($false)), # Do not use default credentials.
+                (New-Object Microsoft.VisualStudio.Services.OAuth.VssOAuthAccessTokenCredential($endpoint.auth.parameters.AccessToken)),
+                [Microsoft.VisualStudio.Services.Common.CredentialPromptType]::DoNotPrompt)
+        }
+
+        throw 'not impl'
+
+        # Add-Type -LiteralPath (Assert-Path "$(Get-TaskVariable -Name 'Agent.ServerOMDirectory' -Require)\Microsoft.VisualStudio.Services.Common.dll" -PassThru)
+        # Add-Type -LiteralPath (Assert-Path "$(Get-TaskVariable -Name 'Agent.ServerOMDirectory' -Require)\Microsoft.VisualStudio.Services.WebApi.dll" -PassThru)
+        # # Add-Type -LiteralPath (Assert-Path "$(Get-TaskVariable -Name 'Agent.ServerOMDirectory' -Require)\Microsoft.VisualStudio.Services.Client.dll" -PassThru)
+        # New-Object Microsoft.VisualStudio.Services.Common.VssCredentials(
+        #     (New-Object Microsoft.VisualStudio.Services.Common.WindowsCredential($false)), # Do not use default credentials.
+        #     (New-Object Microsoft.VisualStudio.Services.OAuth.VssOAuthAccessTokenCredential($endpoint.auth.parameters.AccessToken)),
+        #     [Microsoft.VisualStudio.Services.Common.CredentialPromptType]::DoNotPrompt)
 
         # Add-Type -LiteralPath (Assert-Path "$(Get-TaskVariable -Name 'Agent.ServerOMDirectory' -Require)\Microsoft.VisualStudio.Services.Common.dll" -PassThru)
         # $endpoint = (Get-Endpoint -Name SystemVssConnection -Require)
         # New-Object Microsoft.VisualStudio.Services.Common.VssServiceIdentityCredential(
         #     New-Object Microsoft.VisualStudio.Services.Common.VssServiceIdentityToken([string]$endpoint.auth.parameters.AccessToken))
+    } catch {
+        $ErrorActionPreference = 'Continue'
+        Write-Error $_
     } finally {
         Trace-LeavingInvocation -InvocationInfo $MyInvocation
     }
@@ -80,10 +122,10 @@ function Get-VssCredentials {
 function New-VssHttpClient {
     [CmdletBinding()]
     param(
-        [string]$OMDirectory,
-
         [Parameter(Mandatory = $true)]
         [string]$TypeName,
+
+        [string]$OMDirectory,
 
         [string]$Uri,
 
@@ -91,53 +133,46 @@ function New-VssHttpClient {
 
     Trace-EnteringInvocation -InvocationInfo $MyInvocation
     try {
+        $ErrorActionPreference = 'Stop'
+
+        # Default the OMDirectory to the directory containing the entry script.
+        if (!$OMDirectory) {
+            $OMDirectory = [System.IO.Path]::GetFullPath("$PSScriptRoot\..\..")
+        }
+
+        # Default the URI to the collection URI.
         if (!$Uri) {
-            # Default the URI.
             $Uri = Get-TaskVariable -Name System.TeamFoundationCollectionUri -Require
         }
 
+        # Cast the URI.
         [uri]$Uri = New-Object System.Uri($Uri)
 
+        # Default the credentials.
         if (!$VssCredentials) {
-            # Default the credentials.
-            $VssCredentials = Get-VssCredentials
+            $VssCredentials = Get-VssCredentials -OMDirectory $OMDirectory
         }
 
-        # Try to load the type.
-        try {
+        # Determine the fallback DLL in case the type fails to load.
+        $fallbackDll = $null
+        if ($TypeName -like 'Microsoft.*.WebApi.*HttpClient') {
+            # Try to interpret the fallback DLL name. Trim the last ".___HttpClient" and add ".dll".
+            $fallbackDll = $TypeName.SubString(0, $TypeName.LastIndexOf('.'))
+            $fallbackDll = [System.IO.Path]::Combine($OMDirectory, "$fallbackDll.dll")
+        }
+
+        # Test the type.
+        if (!(Test-Type -TypeName $TypeName -FallbackDll $fallbackDll)) {
+            # Bubble the error.
             $null = [type]$TypeName
-        } catch {
-            Write-Verbose "Caught exception while attempting to load type: '$TypeName'"
-            if ($TypeName -like 'Microsoft.*.WebApi.*HttpClient') {
-                # Try to interpret the DLL name. Trim the last ".___HttpClient" and add ".dll".
-                $dll = $TypeName.SubString(0, $TypeName.LastIndexOf('.'))
-                $dll = [System.IO.Path]::Combine($OMDirectory, "$dll.dll")
-                Write-Verbose "Testing file path for interpreted assembly name: '$dll'"
-                if (!(Test-Path -LiteralPath $dll -PathType Leaf)) {
-                    Write-Verbose 'Not found. Rethrowing exception.'
-                    # Unable to find a file matching the interpreted assembly name.
-                    # Rethrow.
-                    throw
-                }
-
-                # Load the interpreted WebApi DLL.
-                Write-Verbose "Loading assembly: '$dll'"
-                Add-Type -LiteralPath $dll
-
-                # Try again to load the type, now that the WebApi DLL is loaded.
-                Write-Verbose "Re-attempting to load the type: '$TypeName'"
-                $null = [type]$TypeName
-            } else {
-                # Rethrow.
-                throw
-            }
         }
 
         # Try to construct the HTTP client.
+        Write-Verbose "Constructing HTTP client."
         try {
             New-Object $TypeName($Uri, $VssCredentials)
         } catch {
-            # Check if the exception is due to Newtonsoft.Json DLL not found.
+            # Check if the exception is not due to Newtonsoft.Json DLL not found.
             if ($_.Exception.InnerException -isnot [System.IO.FileNotFoundException] -or
                 $_.Exception.InnerException.FileName -notlike 'Newtonsoft.Json, *') {
 
@@ -171,21 +206,77 @@ function New-VssHttpClient {
             [System.AppDomain]::CurrentDomain.add_AssemblyResolve($onAssemblyResolve)
             try {
                 # Try again to construct the HTTP client.
+                Write-Verbose "Trying again to construct the HTTP client."
                 New-Object $TypeName($Uri, $VssCredentials)
             } finally {
                 # Unregister the assembly resolver.
+                Write-Verbose "Removing assemlby resolver."
                 [System.AppDomain]::CurrentDomain.remove_AssemblyResolve($onAssemblyResolve)
             }
-            # '*'*80|out-host
-            # $_.exception.gettype().fullname|out-host
-            # '*'*80|out-host
-            # $_.exception|fl * -for|out-host
-            # '*'*80|out-host
-            # $_.exception.innerexception.gettype().fullname|out-host
-            # '*'*80|out-host
-            # $_.exception.innerexception|fl * -for|out-host
-            # '*'*80|out-host
         }
+    } catch {
+        $ErrorActionPreference = 'Continue'
+        Write-Error $_
+    } finally {
+        Trace-LeavingInvocation -InvocationInfo $MyInvocation
+    }
+}
+
+########################################
+# Private functions.
+########################################
+function Test-Type {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TypeName,
+
+        [string]$FallbackDll)
+
+    Trace-EnteringInvocation -InvocationInfo $MyInvocation
+    try {
+        # Try to load the type.
+        $ErrorActionPreference = 'Ignore'
+        try {
+            # Failure when attempting to cast a string to a type, transfers control to the
+            # catch handler even when the error action preference is ignore. The error action
+            # is set to Ignore so the $Error variable is not polluted.
+            $null = [type]$TypeName
+
+            # Success.
+            return $true
+        } catch { }
+
+        $ErrorActionPreference = 'Stop'
+
+        # Test if the fallback DLL exists.
+        if ($FallbackDll) {
+            Write-Verbose "Testing file path: '$FallbackDll'"
+            if ((Test-Path -LiteralPath $FallbackDll -PathType Leaf)) {
+                # Load the fallback DLL.
+                Write-Verbose "Loading assembly: '$FallbackDll'"
+                Add-Type -LiteralPath $FallbackDll
+
+                # Try again.
+                $ErrorActionPreference = 'Ignore'
+                try {
+                    # Failure when attempting to cast a string to a type, transfers control to the
+                    # catch handler even when the error action preference is ignore. The error action
+                    # is set to Ignore so the $Error variable is not polluted.
+                    $null = [type]$TypeName
+
+                    # Success.
+                    return $true
+                } catch { }
+
+                $ErrorActionPreference = 'Stop'
+            } else {
+                # The fallback DLL was not found.
+                Write-Verbose 'Not found.'
+            }
+        }
+
+        return $false
     } finally {
         Trace-LeavingInvocation -InvocationInfo $MyInvocation
     }
