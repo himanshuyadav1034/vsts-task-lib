@@ -127,7 +127,7 @@ $null = New-Item -Force -Path "function:\global:Invoke-VstsTaskScript" -Value ([
         # Initialize the environment.
         $vstsModule = Get-Module -Name VstsTaskSdk
         Write-Verbose "$($vstsModule.Name) $($vstsModule.Version) commit $($vstsModule.PrivateData.PSData.CommitHash)" 4>&1 | Out-Default
-        & $vstsModule Initialize-SecureInputs 4>&1 | Out-Default
+        & $vstsModule Initialize-Inputs 4>&1 | Out-Default
 
         # Remove the local variable before calling the user's script.
         Remove-Variable -Name vstsModule

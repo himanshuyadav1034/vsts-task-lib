@@ -17,6 +17,11 @@ export enum TaskResult {
     Failed = 1
 }
 
+/** Hash table of variable info. Only the 'name' and 'secret' properties are populated
+ *  on each VariableInfo.
+ */
+var variableInfo: { [key: string]: VariableInfo; } = { };
+
 var vault: vm.Vault;
 
 //-----------------------------------------------------
@@ -243,19 +248,32 @@ export function loc(key: string, ...param: any[]): string {
 // Input Helpers
 //-----------------------------------------------------
 /**
- * Gets a variables value which is defined on the build definition or set at runtime.
+ * Gets a variable value that is defined on the build definition or set at runtime.
  * 
  * @param     name     name of the variable to get
  * @returns   string
  */
 export function getVariable(name: string): string {
     var varval;
-    if (vault) {
-        varval = vault.retrieveSecret('SECRET_' + name.replace(/\./g, '_').toUpperCase());
+
+    // get the metadata
+    var info: VariableInfo;
+    var key: string = getVariableKey(name);
+    if (variableInfo.hasOwnProperty(key)) {
+        info = variableInfo[key];
     }
 
-    if (!varval) {
-        varval = process.env[name.replace(/\./g, '_').toUpperCase()];
+    if (info && info.secret) {
+        // get the secret value
+        varval = vault.retrieveSecret('SECRET_' + key);
+    } else {
+        // get the public value
+        varval = process.env[key];
+
+        // fallback for pre 2.104.1 agent
+        if (!varval && name.toUpperCase() == 'AGENT.JOBSTATUS') {
+            varval = process.env['agent.jobstatus'];
+        }
     }
 
     debug(name + '=' + varval);
@@ -263,21 +281,77 @@ export function getVariable(name: string): string {
 }
 
 /**
- * Sets a variables which will be available to subsequent tasks as well.
+ * Gets all variables that are defined on the build definition or set at runtime.
+ * Requires a 2.104.1 agent or higher.
  * 
- * @param     name     name of the variable to set
+ * @returns VariableInfo[]
+ */
+export function getVariables(): VariableInfo[] {
+    return Object.keys(variableInfo)
+        .filter(function (key: string) {
+            return variableInfo.hasOwnProperty(key);
+        })
+        .map(function (key: string) {
+            var info: VariableInfo = variableInfo[key];
+            return new VariableInfo(info.name, getVariable(info.name), info.secret);
+        });
+}
+
+/**
+ * Sets a variable which will be available to subsequent tasks as well.
+ * 
+ * @param     name    name of the variable to set
  * @param     val     value to set
+ * @param     secret  whether variable is secret.  optional, defaults to false
  * @returns   void
  */
-export function setVariable(name: string, val: string): void {
+export function setVariable(name: string, val: string, secret?: boolean): void {
+    // once a secret always a secret
+    var key: string = getVariableKey(name);
+    if (variableInfo.hasOwnProperty(key)) {
+        secret = secret || variableInfo[key].secret;
+    }
+
+    // store the value
+    var varValue = val || '';
+    debug('set ' + name + '=' + (secret && varValue ? '********' : varValue));
+    if (secret) {
+        vault.storeSecret('SECRET_' + key, varValue);
+    } else {
+        process.env[key] = varValue;
+    }
+
+    // store the metadata
+    variableInfo[key] = new VariableInfo(name, undefined, secret);
+
+    // write the command
+    command('task.setvariable', { 'variable': name || '', 'secret': (secret || false).toString() }, varValue);
+}
+
+function getVariableKey(name: string): string {
     if (!name) {
         throw new Error(loc('LIB_ParameterIsRequired', 'name'));
     }
 
-    var varValue = val || '';
-    process.env[name.replace(/\./g, '_').toUpperCase()] = varValue;
-    debug('set ' + name + '=' + varValue);
-    command('task.setvariable', { 'variable': name || '' }, varValue);
+    return name.replace(/\./g, '_').toUpperCase();
+}
+
+/** Snapshot of a variable at the time when getVariables was called. */
+export class VariableInfo {
+    constructor(name: string, value: string, secret: boolean) {
+        this.name = name;
+        this.value = value;
+        this.secret = secret;
+    }
+
+    /** Variable name */
+    public name: string;
+
+    /** Variable value */
+    public value: string;
+
+    /** Indicates whether the variable is a secret */
+    public secret: boolean;
 }
 
 /**
@@ -1096,8 +1170,8 @@ if (semver.lt(process.versions.node, '4.2.0')) {
 // in prod, it's called globally below so user does not need to call
 
 export function _loadData(): void {
-    // in agent, workFolder is set.  
-    // In interactive dev mode, it won't be    
+    // in agent, workFolder is set.
+    // In interactive dev mode, it won't be
     var keyPath = getVariable("agent.workFolder") || process.cwd();
     vault = new vm.Vault(keyPath);
     debug('loading inputs and endpoints');
@@ -1107,6 +1181,20 @@ export function _loadData(): void {
             envvar.startsWith('ENDPOINT_AUTH_') ||
             envvar.startsWith('SECRET_')) {
 
+            // Record the secret variable metadata. This is required by getVariable to
+            // retrieve the value. In a 2.104.1 agent or higher, this metadata will be overwritten
+            // when the VSTS_SECRET_VARIABLES env var is processed.
+            if (envvar.startsWith('SECRET_')) {
+                var variableName: string = envvar.substring('SECRET_'.length);
+                if (variableName) {
+                    // This is technically not the variable name (has underscores instead of dots),
+                    // but it's good enough to make getVariable work in a pre-2.104.1 agent where
+                    // the VSTS_SECRET_VARIABLES env var is not define.
+                    variableInfo[getVariableKey(variableName)] = new VariableInfo(variableName, undefined, true);
+                }
+            }
+
+            // store the secret
             if (process.env[envvar]) {
                 ++loaded;
                 debug('loading ' + envvar);
@@ -1116,6 +1204,20 @@ export function _loadData(): void {
         }
     }
     debug('loaded ' + loaded);
+
+    // store public variable metadata
+    JSON.parse(process.env['VSTS_PUBLIC_VARIABLES'] || '[]')
+        .forEach(function (name) {
+            variableInfo[getVariableKey(name)] = new VariableInfo(name, undefined, false);
+        });
+    delete process.env['VSTS_PUBLIC_VARIABLES'];
+
+    // store secret variable metadata
+    JSON.parse(process.env['VSTS_SECRET_VARIABLES'] || '[]')
+        .forEach(function (name) {
+            variableInfo[getVariableKey(name)] = new VariableInfo(name, undefined, true);
+        });
+    delete process.env['VSTS_SECRET_VARIABLES'];
 }
 
 _loadData();
