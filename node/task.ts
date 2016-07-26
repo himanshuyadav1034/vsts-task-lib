@@ -486,6 +486,16 @@ export interface EndpointAuthorization {
 }
 
 /**
+ * Interface for EndpointData
+ * Contains a schema and a string/string dictionary of endpoint data
+ *
+ * string string dictionary of auth data
+ */
+export interface EndpointData {
+    [key: string]: string;
+}
+
+/**
  * Gets the authorization details for a service endpoint
  * If the authorization was not set and is not optional, the task will fail with an error message. Execution will halt.
  * 
@@ -514,6 +524,30 @@ export function getEndpointAuthorization(id: string, optional: boolean): Endpoin
     return auth;
 }
 
+/**
+ * Gets the Data for a service endpoint
+ * If the authorization was not set and is not optional, the task will fail with an error message. Execution will halt.
+ *
+ * @param     id        name of the service endpoint
+ * @param     optional  whether the url is optional
+ * @returns   string
+ */
+
+export function getEndpointData(id:string, optional:boolean):EndpointData {
+    var dval = vault.retrieveSecret('ENDPOINT_DATA_' + id);
+    if (!optional && !dval) {
+        setResult(TaskResult.Failed, loc('LIB_EndpointNotExist', id));
+    }
+    var data: EndpointData;
+    try {
+        data = <EndpointData>JSON.parse(dval);
+    }
+    catch (err) {
+        throw new Error(loc('LIB_InvalidEndpointData', aval));
+    }
+    return data;
+}
+exports.getEndpointData = getEndpointData;
 
 //-----------------------------------------------------
 // Cmd Helpers
@@ -1105,6 +1139,7 @@ export function _loadData(): void {
     for (var envvar in process.env) {
         if (envvar.startsWith('INPUT_') ||
             envvar.startsWith('ENDPOINT_AUTH_') ||
+            envvar.startsWith('ENDPOINT_DATA_') ||
             envvar.startsWith('SECRET_')) {
 
             if (process.env[envvar]) {
